@@ -1,6 +1,10 @@
 use super::bits::rounddown;
 use super::decoder::build_imac_decoder;
-use super::instructions::{Instruction, Register};
+use super::instructions::{
+    i::{Instruction as RV32II, ItypeInstruction},
+    rvc::Instruction as RVCI,
+    Instruction, Register,
+};
 use super::memory::{Memory, PROT_EXEC, PROT_READ, PROT_WRITE};
 use super::syscalls::Syscalls;
 use super::{
@@ -13,6 +17,9 @@ use std::cmp::max;
 use std::fmt::{self, Display};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+
+use fnv::FnvHashMap;
+use std::collections::hash_map::Entry::Occupied;
 
 fn elf_bits(header: &Header) -> Option<usize> {
     // This is documented in ELF specification, we are exacting ELF file
@@ -343,6 +350,39 @@ where
     }
 }
 
+fn is_basic_block_end_instruction(i: &Instruction) -> bool {
+    match i {
+        Instruction::I(i) => match i {
+            RV32II::I(i) => match i.inst() {
+                ItypeInstruction::JALR => true,
+                _ => false,
+            },
+            RV32II::B(_) => true,
+            RV32II::Env(_) => true,
+            RV32II::JAL { .. } => true,
+            _ => false,
+        },
+        Instruction::RVC(i) => match i {
+            RVCI::BEQZ { .. } => true,
+            RVCI::BNEZ { .. } => true,
+            RVCI::JAL { .. } => true,
+            RVCI::J { .. } => true,
+            RVCI::JR { .. } => true,
+            RVCI::JALR { .. } => true,
+            RVCI::EBREAK => true,
+            _ => false,
+        },
+        Instruction::M(_) => false,
+    }
+}
+
+fn instruction_length(i: &Instruction) -> usize {
+    match i {
+        Instruction::RVC(_) => 2,
+        _ => 4,
+    }
+}
+
 impl<'a, R, M> DefaultMachine<'a, R, M>
 where
     R: Register,
@@ -371,7 +411,44 @@ where
         )?;
         let decoder = build_imac_decoder::<R>();
         self.running = true;
+        let mut start_of_basic_block = true;
+        let mut instruction_cache: FnvHashMap<usize, Vec<Instruction>> = FnvHashMap::default();
+        let mut block_measures = FnvHashMap::default();
         while self.running {
+            let pc = self.pc().to_usize();
+            if start_of_basic_block {
+                if let Occupied(e) = instruction_cache.entry(pc) {
+                    // Executing cached entries
+                    for i in e.get() {
+                        i.execute(self)?;
+                    }
+                    continue;
+                }
+
+                let measure = block_measures.entry(pc).or_insert(0);
+                *measure += 1;
+                if *measure > 5 {
+                    // current basic block is hot, cache the instructions
+                    let mut current_pc = pc;
+                    let mut instructions = Vec::new();
+                    loop {
+                        let instruction = decoder.decode(self.memory_mut(), current_pc)?;
+                        let end_instruction = is_basic_block_end_instruction(&instruction);
+                        current_pc += instruction_length(&instruction);
+                        instructions.push(instruction);
+
+                        if end_instruction {
+                            break;
+                        }
+                    }
+                    // We can just executed parsed instructions here
+                    for i in &instructions {
+                        i.execute(self)?;
+                    }
+                    instruction_cache.insert(pc, instructions);
+                    continue;
+                }
+            }
             let instruction = {
                 let pc = self.pc().to_usize();
                 let memory = self.memory_mut();
@@ -384,6 +461,7 @@ where
                 .map(|f| f(&instruction))
                 .unwrap_or(0);
             self.add_cycles(cycles);
+            start_of_basic_block = is_basic_block_end_instruction(&instruction);
         }
         Ok(self.exit_code)
     }
