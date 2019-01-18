@@ -10,7 +10,7 @@ pub use crate::{
     instructions::{Instruction, Register},
     machine::{CoreMachine, DefaultMachine, Machine, SupportMachine},
     memory::{flat::FlatMemory, mmu::Mmu, sparse::SparseMemory, Memory},
-    runners::interpreter::run as interpreter_run,
+    runners::{interpreter::run as interpreter_run, jit::run as jit_run},
     syscalls::Syscalls,
 };
 use std::io::{Error as IOError, ErrorKind};
@@ -95,4 +95,12 @@ pub fn run<R: Register, M: Memory + Default>(
 ) -> Result<u8, Error> {
     let mut machine = DefaultMachine::<R, M>::default().load_program(program, args)?;
     interpreter_run(&mut machine)
+}
+
+pub fn run_with_jit<R: Register, M: Memory + Default>(
+    program: &[u8],
+    args: &[Vec<u8>],
+) -> Result<u8, Error> {
+    let mut machine = DefaultMachine::<R, M>::default().load_program(program, args)?;
+    jit_run(&mut machine)
 }

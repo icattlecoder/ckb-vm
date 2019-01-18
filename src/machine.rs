@@ -391,7 +391,7 @@ where
             core: DefaultCoreMachine::default(),
             syscalls: vec![],
             running: false,
-            exit_code: 0,
+            exit_code: 255,
         }
     }
 }
@@ -449,5 +449,9 @@ where
 
     pub fn instruction_cycle_func(&self) -> &Option<Box<InstructionCycleFunc>> {
         &self.instruction_cycle_func
+    }
+
+    pub fn registers_mut(&mut self) -> &mut [R] {
+        &mut self.registers
     }
 }
